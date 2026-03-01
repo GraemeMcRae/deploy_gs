@@ -1,0 +1,22 @@
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Timezone data and handling (Required for Windows; pytz is required for deploy_gs.py)
+pytz>=2024.1
+tzdata>=2024.1
+
+# Google Sheets formatting
+gspread-formatting>=1.1.0
+
+# Google Sheets API (Keep both the new google-auth and the deprecated oauth2client to avoid breaking old scripts)
+gspread>=6.1.2
+google-auth>=2.38.0
+google-auth-oauthlib>=1.2.1
+oauth2client>=4.1.3
+
+# Discord bot library
+# discord.py>=2.4.0
+
+# Browser automation
+# playwright>=1.40.0
+

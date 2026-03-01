@@ -1,0 +1,54 @@
+# Environment variables and secrets
+.env
+*.env
+.env.local
+.env.*.local
+[Cc]onfidential*
+[Ss]ecret*
+[Dd]ebug*
+
+# Google credentials
+google_credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyo
+*.pyd
+venv*/
+env/
+ENV/
+
+# IDE settings (VSCode, PyCharm, etc.)
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Microsoft Office backup files
+~$*
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+*.log.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Backups of project files
+*BK202*.*
