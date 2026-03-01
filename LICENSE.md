@@ -92,8 +92,8 @@ You do NOT need to:
 
 Example attribution:
 ```
-This product includes Sheets-to-Discord by Graeme McRae
-https://github.com/yourusername/sheets-to-discord
+This product includes deploy_gs by Graeme McRae
+https://github.com/yourusername/deploy_gs
 ```
 
 ### Compatibility

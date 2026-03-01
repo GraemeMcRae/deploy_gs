@@ -26,9 +26,11 @@ comments stripped, deployment timestamp updated, pretty formatting preserved.
 
 **Python setup**
 1. Establish a project directory. All files mentioned below go in this directory.
-2. Create a Python Virtual Environment (`venv`) or use an existing one.
-3. Install Python packages. Merge the following into your existing `requirements.txt`
-   to make a superset of requirements, then run `pip install -r requirements.txt`:
+2. Create a Python Virtual Environment (`venv`) or use an existing one. I recommend using Python version 3.13 or later. (Use an AI assistant for detailed instructions if you've never done this before.)
+3. Install Python packages.
+   - If you will be using deploy_gs.py in an existing Python environment, merge the following into your existing `requirements.txt`
+   - Otherwise, use the `requirements.txt` file I've bundled with this package.
+   - then run `pip install -r requirements.txt`
 
 ```
 python-dotenv>=1.0.0
@@ -41,8 +43,7 @@ tzdata>=2024.1
 4. Save `deploy_gs.py` in your project directory.
 
 **Google credentials**
-1. Create a Google service account and download its credentials JSON file, or use
-   existing credentials if you have them.
+1. Create a Google service account and download its credentials JSON file, or use existing credentials if you have them. (If you've never done this before, I included a "HowTo" file in this package to help you. Or use an AI assistant for customized help.)
 2. Create or modify a file called `.env` in your project directory to include:
 
 ```
