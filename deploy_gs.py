@@ -49,6 +49,7 @@ RETRY_DELAY = 10  # seconds
 
 _shutdown_requested = False
 
+
 def _sigint_handler(sig, frame):
     global _shutdown_requested
     if _shutdown_requested:
@@ -56,6 +57,7 @@ def _sigint_handler(sig, frame):
         sys.exit(1)
     _shutdown_requested = True
     print("\nCtrl-C received. Finishing current operation then exiting gracefully...")
+
 
 signal.signal(signal.SIGINT, _sigint_handler)
 
@@ -132,7 +134,6 @@ def strip_comments(formula: str) -> str:
     formula = re.sub(r'[ \t]*(?:^|(?<=\s))//[^\n]*', '', formula, flags=re.MULTILINE)
 
     # Step 3: Collapse runs of blank/whitespace-only lines to at most one blank line
-    # A "blank line" here means a line with only whitespace.
     formula = re.sub(r'\n(\s*\n)+', '\n\n', formula)
 
     # Step 4: Strip leading/trailing whitespace
@@ -171,14 +172,180 @@ def update_date_deployed(formula: str, local_tz) -> str:
     return new_formula
 
 
+def extract_source_string(formula: str) -> str | None:
+    """
+    Extract the full _Source,N("<filename>"), marker as it literally appears
+    in the formula. Used for before/after identity comparison in verification.
+    Returns the matched substring, or None if not found.
+    """
+    pattern = r'_Source\s*,\s*N\s*\(\s*"[^"]*"\s*\)\s*,'
+    m = re.search(pattern, formula)
+    return m.group(0) if m else None
+
+
 def extract_source_filename(formula: str) -> str | None:
     """
-    Extract the filename from _Source,N("<filename>"),
+    Extract just the filename value from _Source,N("<filename>"),
     Returns None if not found.
     """
     pattern = r'_Source\s*,\s*N\s*\(\s*"([^"]+)"\s*\)\s*,'
     m = re.search(pattern, formula)
     return m.group(1) if m else None
+
+
+# ---------------------------------------------------------------------------
+# Verification helpers
+# ---------------------------------------------------------------------------
+
+def trim_for_verify(text: str) -> str:
+    """
+    Normalize a formula string for bookend scanning and bookshelf comparison:
+      1. Normalize all line endings to bare newlines (strip \\r).
+      2. Collapse runs of whitespace within each line to a single space.
+      3. Strip leading and trailing whitespace from each line.
+      4. Remove blank lines entirely.
+      5. Rejoin with single newlines.
+
+    This means two strings are considered equal when they differ only in
+    indentation, intra-line spacing, blank lines, or CRLF vs LF line endings.
+    """
+    # Step 1: normalize CRLF -> LF
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # Steps 2-4: process line by line
+    lines = text.splitlines()
+    result = []
+    for line in lines:
+        condensed = re.sub(r'[ \t]+', ' ', line).strip()
+        if condensed:
+            result.append(condensed)
+    return '\n'.join(result)
+
+
+def extract_bookshelves(formula: str, context: str) -> dict[str, str]:
+    r"""
+    Find all _Verify_<n> bookend pairs in a (pre-trimmed) formula and return
+    a dict mapping name -> bookshelf string (also trimmed).
+
+    Algorithm (two-pass):
+
+    Pass 1 - token discovery with position recording:
+      Scan the formula for every token matching _Verify_<n> where <n> is
+      one or more letters or digits (no underscores) immediately following
+      _Verify_, terminated by an underscore or any non-word character.
+      Record (name, start_pos) for each match. Count occurrences per name.
+      Warn and discard any name whose count is not exactly 2.
+
+    Pass 2 - bookshelf extraction:
+      For each surviving name with exactly 2 recorded positions [p0, p1],
+      the bookshelf is formula[p0:p1] -- from the start of the first token
+      up to (but not including) the start of the second token.
+
+    Notes:
+      - The suffix after <n> (e.g. _Begin, _End, _Start) is irrelevant.
+      - Overlapping bookshelves are permitted and handled correctly.
+      - _Verify_11 and _Verify_1 are independent names; a stray _Verify_11
+        with an unexpected count cannot affect the _Verify_1 bookshelf.
+
+    'context' is used in warning messages (e.g. "before" or "after").
+    """
+
+    # Pass 1: find all _Verify_<n> tokens, recording name and start position.
+    # Name is letters/digits only -- underscore terminates the name.
+    token_pattern = re.compile(r'_Verify_([A-Za-z0-9]+)')
+
+    # occurrences: name -> list of start positions
+    occurrences: dict[str, list[int]] = {}
+    for m in token_pattern.finditer(formula):
+        name = m.group(1)
+        occurrences.setdefault(name, []).append(m.start())
+
+    # Warn and filter: keep only names with exactly 2 occurrences.
+    valid: dict[str, list[int]] = {}
+    for name, positions in sorted(occurrences.items()):
+        count = len(positions)
+        if count == 2:
+            valid[name] = positions
+        else:
+            print(f"  [Warning] _Verify_{name} appears {count} time(s) in the "
+                  f"{context} formula (expected 2); skipping this bookshelf.")
+
+    # Pass 2: extract each bookshelf as formula[p0:p1].
+    result: dict[str, str] = {}
+    for name, (p0, p1) in sorted(valid.items()):
+        result[name] = formula[p0:p1]
+
+    return result
+
+
+def _indent(text: str, prefix: str = '      ') -> str:
+    """Indent every line of text with the given prefix, for readable error output."""
+    return '\n'.join(prefix + line for line in text.splitlines())
+
+
+def verify_formula(before: str, after: str, display: str) -> bool:
+    """
+    Perform verification checks between the 'before' formula (currently in
+    the cell) and the 'after' formula (comment-stripped from the .gs file).
+
+    Both 'before' and 'after' are passed through trim_for_verify() before
+    bookend scanning and comparison, so differences in indentation, spacing,
+    blank lines, and CRLF vs LF are ignored. The trimmed versions are also
+    used in error messages, which will appear condensed.
+
+    Returns True if the cell should proceed to deployment, False if it should
+    be skipped due to a verification failure.
+
+    Checks:
+      1. _Source marker must be identical in before and after (hard error),
+         compared after trim_for_verify().
+      2. Bookshelves present in both before and after must match (hard error
+         per failing bookshelf; any failure skips the entire cell).
+      3. Bookshelves present in only one of before/after produce an
+         informational message -- these are not errors.
+    """
+    passed = True
+
+    trimmed_before = trim_for_verify(before)
+    trimmed_after  = trim_for_verify(after)
+
+    # --- Check 1: _Source string identity (on trimmed text) ---
+    before_source = extract_source_string(trimmed_before)
+    after_source  = extract_source_string(trimmed_after)
+    if before_source != after_source:
+        print(f"  [Error] _Source mismatch:")
+        print(f"    Before: {before_source}")
+        print(f"    After:  {after_source}")
+        passed = False
+
+    # --- Checks 2 & 3: Bookshelves (scanned and compared on trimmed text) ---
+    before_shelves = extract_bookshelves(trimmed_before, 'before')
+    after_shelves  = extract_bookshelves(trimmed_after,  'after')
+
+    before_names = set(before_shelves.keys())
+    after_names  = set(after_shelves.keys())
+    common_names = before_names & after_names
+    only_before  = before_names - after_names
+    only_after   = after_names  - before_names
+
+    # Informational messages for one-sided bookshelves
+    for name in sorted(only_before):
+        print(f"  [Info] _Verify_{name} exists in the cell but not in the .gs file; "
+              f"it will be removed by this deployment.")
+    for name in sorted(only_after):
+        print(f"  [Info] _Verify_{name} is new in the .gs file and not yet in the cell; "
+              f"it will be added by this deployment.")
+
+    # Compare bookshelves present in both
+    for name in sorted(common_names):
+        if before_shelves[name] == after_shelves[name]:
+            print(f"  [Verify] _Verify_{name}: OK")
+        else:
+            print(f"  [Error] _Verify_{name} mismatch:")
+            print(f"    Before deployment:\n{_indent(before_shelves[name])}")
+            print(f"    After deployment:\n{_indent(after_shelves[name])}")
+            passed = False
+
+    return passed
 
 
 # ---------------------------------------------------------------------------
@@ -378,10 +545,6 @@ def main():
     check_shutdown()
 
     # --- Group refs by sheet ---
-    # For header lookups we need row 1 of each sheet that has non-abs-ref cols.
-    # For abs refs we need the specific cell.
-
-    # Collect unique sheets with non-abs columns -> need their row 1
     sheets_needing_headers = {}   # sheet_name -> list of col item dicts (non-abs)
     abs_ref_items = []            # list of col item dicts (abs_ref=True)
 
@@ -396,8 +559,7 @@ def main():
 
     # --- BATCH GET 1: All header rows for sheets with named columns ---
     header_ranges = [f"'{sname}'!1:1" for sname in sheets_needing_headers]
-
-    header_data = {}   # sheet_name -> list of header strings
+    header_data = {}
 
     if header_ranges:
         print(f"\nFetching {len(header_ranges)} header row(s) in one batch...")
@@ -416,11 +578,8 @@ def main():
             sys.exit(1)
 
     # --- Build cell ranges for BATCH GET 2: All formula cells ---
-    # For named columns: row 2 of the matching column.
-    # For abs refs: the specified cell.
-
-    formula_ranges = []   # A1 notation strings
-    formula_meta = []     # parallel list of (sheet_name, display_name, is_abs, col_idx, row)
+    formula_ranges = []
+    formula_meta = []
 
     for sheet_name, items in sheets_needing_headers.items():
         headers = header_data.get(sheet_name, [])
@@ -448,7 +607,6 @@ def main():
         except ValueError as e:
             print(f"[Warning] {e}; skipping.")
             continue
-        # Build A1 with the literal reference (it's already absolute)
         a1 = f"'{sheet_name}'!{ref}"
         formula_ranges.append(a1)
         formula_meta.append({
@@ -475,7 +633,7 @@ def main():
     check_shutdown()
 
     # --- Process each formula ---
-    write_data = []   # list of (a1_notation, new_formula)
+    write_data = []
 
     for i, meta in enumerate(formula_meta):
         display = meta['display']
@@ -509,11 +667,19 @@ def main():
             print(f"  [Error] Cannot read '{source_file}': {e}; skipping.")
             continue
 
-        # Strip comments
+        # Strip comments -- 'cleaned' is the untrimmed version that will be
+        # written to the sheet if verification passes.
         cleaned = strip_comments(gs_content)
         print(f"  Comments stripped. Formula length: {len(gs_content)} -> {len(cleaned)} chars.")
 
-        # Update _Date_deployed
+        # --- Verify before proceeding ---
+        # verify_formula() internally applies trim_for_verify() to both sides;
+        # 'cleaned' is preserved untrimmed for the actual write.
+        if not verify_formula(cell_formula, cleaned, display):
+            print(f"  Skipping deployment of {display} due to verification failure.")
+            continue
+
+        # Update _Date_deployed in the untrimmed cleaned formula
         cleaned = update_date_deployed(cleaned, local_tz)
 
         write_data.append((meta['a1'], cleaned))
@@ -526,7 +692,6 @@ def main():
     check_shutdown()
     print(f"\nWriting {len(write_data)} formula(s) in one batch...")
 
-    # gspread batch_update takes a list of dicts with 'range' and 'values'
     data_payload = [
         {'range': a1, 'values': [[formula]]}
         for a1, formula in write_data

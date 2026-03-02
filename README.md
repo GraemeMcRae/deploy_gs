@@ -321,6 +321,137 @@ The `N()` function in Google Sheets returns zero for any text argument, so these
 markers have no effect on the formula's computed result. They serve purely as
 self-documenting metadata visible to anyone inspecting the formula in the sheet.
 
+**Verification with _Verify_ bookends**
+
+Google Sheets automatically rewrites cell references in formulas when columns or rows
+are inserted, deleted, or reordered. This is normally helpful, but it means that a
+formula in the spreadsheet can silently drift away from its `.gs` source file. If you
+then redeploy from the `.gs` file, you'll overwrite those automatic adjustments —
+potentially breaking the formula without any warning.
+
+The `_Verify_` bookend system guards against this. You wrap selected parts of your
+formula in named bookend pairs. Before each deployment, `deploy_gs.py` compares those
+sections between the live cell and the `.gs` file. If they don't match, deployment is
+blocked and you are shown exactly what changed, so you can decide whether to update
+the `.gs` file or investigate further.
+
+*Bookend syntax*
+
+A bookend is any symbol name of the form `_Verify_<n>_<suffix>` where `<n>` is the
+bookend's name — one or more letters or digits — and `<suffix>` is anything you like
+(e.g. `Begin`, `End`, `Start`). The underscore after `<n>` acts as the name
+terminator, so `_Verify_1_Begin` and `_Verify_1_End` both have the name `1`, and
+`_Verify_anchor_Begin` has the name `anchor`.
+
+A bookshelf is a matched pair of bookends with the same name, appearing exactly twice
+in the formula. The bookshelf content is everything from the start of the first
+bookend up to (but not including) the start of the second bookend. This means the
+first bookend is included in the bookshelf content and the second is not. A bookshelf
+may span multiple lines.
+
+Example formula with two bookend pairs:
+
+```
+=LET(
+  _Author,N("your name"),
+  _Source,N("formulas/myformula.gs"),
+  _Deployed_using,N("python deploy_gs.py 'Spreadsheet Name' 'SheetName!$C$14'"),
+  _Date_deployed,N("deployment date"),
+
+  _Verify_refs_Begin,N("Cell references"),
+  anchor,Indirect("Trips_Sheet!$K$13"),
+  total,Sum(Trips_Sheet!$B$2:$B$100),
+  _Verify_refs_End,N(""),
+
+  anchor+total
+)
+```
+
+In this example, the `refs` bookshelf content is everything from `_Verify_refs_Begin`
+up to (not including) `_Verify_refs_End`:
+
+```
+_Verify_refs_Begin,N("Cell references"),
+  anchor,Indirect("Trips_Sheet!$K$13"),
+  total,Sum(Trips_Sheet!$B$2:$B$100),
+```
+
+If someone inserts a column before K, Google Sheets will rewrite `$K$13` to `$L$13`
+in the live cell. The next time you run `deploy_gs.py`, the bookshelf in the cell
+will no longer match the bookshelf in the `.gs` file, and deployment will be blocked:
+
+```
+  [Error] _Verify_refs mismatch:
+    Before deployment:
+      _Verify_refs_Begin,N("Cell references"),
+      anchor,Indirect("Trips_Sheet!$L$13"),
+      total,Sum(Trips_Sheet!$B$2:$B$100),
+    After deployment:
+      _Verify_refs_Begin,N("Cell references"),
+      anchor,Indirect("Trips_Sheet!$K$13"),
+      total,Sum(Trips_Sheet!$B$2:$B$100),
+```
+
+You can then decide: if the column insertion was intentional, update the `.gs` file
+to use `$L$13`. If it was accidental, fix the spreadsheet first.
+
+*What deploy_gs.py reports during verification*
+
+| Message | Meaning |
+|---|---|
+| `[Verify] _Verify_<n>: OK` | Bookshelf matches; no action needed |
+| `[Error] _Verify_<n> mismatch` | Bookshelf differs; deployment blocked for this cell |
+| `[Info] _Verify_<n> exists in the cell but not in the .gs file` | Bookshelf will be removed by this deployment (informational) |
+| `[Info] _Verify_<n> is new in the .gs file and not yet in the cell` | Bookshelf will be added by this deployment (informational) |
+| `[Warning] _Verify_<n> appears N time(s)` | Bookend found a number of times other than 2; this bookshelf is skipped |
+
+*Bookend naming rules*
+
+The name `<n>` consists of letters and digits only — no underscores. The first
+underscore after `_Verify_` terminates the name. So:
+
+- `_Verify_1_Begin` → name is `1`
+- `_Verify_anchor_End` → name is `anchor`
+- `_Verify_myRef_Start` → name is `myRef`
+
+This also means `_Verify_11` and `_Verify_1` are completely independent names.
+A stray `_Verify_11` that appears only once will produce a warning for name `11`
+and will have no effect on any bookshelf named `1`.
+
+*Bookend placement tips*
+
+Because the `_Verify_` symbols are just `N(...)` values inside a `LET`, they have
+no effect on the formula's computed result. Place them around any expression that
+contains cell references you want to protect — typically anchor cells, named ranges,
+or table references that could shift if the spreadsheet structure changes.
+
+You can add, remove, or rename bookshelves at any time. Adding a new bookshelf to
+the `.gs` file produces an informational message on the first deployment (since it
+doesn't yet exist in the cell) and is then tracked on all subsequent deployments.
+Removing a bookshelf from the `.gs` file produces an informational message on the
+next deployment and is then silently gone.
+
+Overlapping bookshelves are permitted. For example, a large outer bookshelf covering
+an entire section and a smaller inner bookshelf covering a critical cell reference
+within it can coexist without interfering with each other.
+
+The closing bookend does not need to be on its own line. It can appear at the end of
+a data line, and any trailing whitespace after it is ignored.
+
+*Bookend comparison and whitespace*
+
+Before scanning for bookends and comparing bookshelves, `deploy_gs.py` applies a
+normalization step to both the live cell formula and the comment-stripped `.gs`
+content. This normalization: collapses any run of spaces or tabs within a line down
+to a single space; strips leading and trailing whitespace from each line; removes
+blank lines entirely; and normalises Windows-style CRLF line endings to LF. Error
+messages show the normalized versions of mismatched bookshelves, which will appear
+more condensed than the original source but are easier to diff visually.
+
+Note that whitespace *inside string literals* is not affected by this normalization —
+`N("hello  world")` and `N("hello world")` are considered different. Only whitespace
+outside of quoted strings is collapsed.
+
 ---
 
 ### Technical information
