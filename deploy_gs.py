@@ -79,7 +79,10 @@ def with_retry(fn, *args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except gspread.exceptions.APIError as e:
-            status = e.response.status_code if hasattr(e, 'response') and e.response else None
+            # Use e.code (int) rather than e.response.status_code: requests.Response
+            # objects with non-2xx status codes are falsy, so "if e.response" would
+            # always be False for the exact errors we need to retry.
+            status = e.code if hasattr(e, 'code') else None
             if status in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES:
                 print(f"  [Retryable error {status}] Waiting {RETRY_DELAY}s before retry "
                       f"(attempt {attempt + 1}/{MAX_RETRIES})...")
@@ -441,10 +444,12 @@ def col_letter_to_index(col_str: str) -> int:
 
 
 def col_index_from_name(headers: list[str], col_name: str) -> int | None:
-    """Find the 0-based column index of a header name. Case-insensitive."""
+    """Find the 0-based column index of a header name. Case-insensitive.
+    Headers are stringified before comparison to handle numeric cell values,
+    which the Google Sheets API returns as int rather than str."""
     col_name_lower = col_name.lower()
     for i, h in enumerate(headers):
-        if h.lower() == col_name_lower:
+        if str(h).lower() == col_name_lower:
             return i
     return None
 
